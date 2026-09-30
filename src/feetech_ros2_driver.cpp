@@ -24,6 +24,19 @@ CallbackReturn FeetechHardwareInterface::on_init(const hardware_interface::Hardw
 #endif
     return CallbackReturn::ERROR;
   }
+  
+  auto node = get_node();
+
+  torque_srv_ = node->create_service<so101_msgs::srv::SetTorque>(
+    "/set_torque",
+    std::bind(
+      &FeetechHardwareInterface::setTorqueCallback,
+      this,
+      std::placeholders::_1,
+      std::placeholders::_2));
+
+
+  state_hw_efforts_.resize(info_.joints.size(), 0.0);
 
   if (init_transport_() != CallbackReturn::SUCCESS) {
     return CallbackReturn::ERROR;
@@ -237,6 +250,7 @@ std::vector<hardware_interface::StateInterface> FeetechHardwareInterface::export
   for (uint i = 0; i < info_.joints.size(); i++) {
     state_interfaces.emplace_back(info_.joints[i].name, hardware_interface::HW_IF_POSITION, &state_hw_positions_[i]);
     state_interfaces.emplace_back(info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, &state_hw_velocities_[i]);
+    state_interfaces.emplace_back(info_.joints[i].name, hardware_interface::HW_IF_EFFORT,&state_hw_efforts_[i]);
   }
 
   return state_interfaces;
@@ -260,9 +274,16 @@ hardware_interface::return_type FeetechHardwareInterface::read(const rclcpp::Tim
   std::vector<std::array<uint8_t, 4>> data;
   data.reserve(joint_ids_.size());
   if (auto result = communication_protocol_->sync_read(joint_ids_, SMS_STS_PRESENT_POSITION_L, &data); !result) {
-    spdlog::error("FeetechHardwareInterface::read -> {}", result.error());
+    spdlog::error("FeetechHardwareInterface::read(position) -> {}", result.error());
     return hardware_interface::return_type::ERROR;
   }
+  std::vector<std::array<uint8_t, 2>> current_data;
+  current_data.reserve(joint_ids_.size());
+  if (auto result = communication_protocol_->sync_read(joint_ids_, SMS_STS_PRESENT_CURRENT_L, &current_data);!result) {
+    spdlog::error("FeetechHardwareInterface::read(current) -> {}", result.error());
+    return hardware_interface::return_type::ERROR;
+  }
+
   ranges::for_each(data | ranges::views::enumerate, [&](const auto& values) {
     const auto& [index, readings] = values;
     state_hw_positions_[index] = feetech_driver::to_radians(
@@ -271,11 +292,37 @@ hardware_interface::return_type FeetechHardwareInterface::read(const rclcpp::Tim
     state_hw_velocities_[index] = feetech_driver::to_radians(
         feetech_driver::from_sts(feetech_driver::WordBytes{.low = readings[2], .high = readings[3]}));
   });
+  
+  ranges::for_each(current_data | ranges::views::enumerate, [&](const auto& values) {
+    const auto& [index, readings] = values;
+    auto currents = feetech_driver::from_sts(
+      feetech_driver::WordBytes{.low = readings[0], .high = readings[1]});
+    // Feetech servos do not provide joint torque directly.
+    // Motor current is used as a proxy for ros2_control effort state.
+    state_hw_efforts_[index] = currents;
+  });
+
   return hardware_interface::return_type::OK;
 }
 
 hardware_interface::return_type FeetechHardwareInterface::write(const rclcpp::Time& /* time */,
                                                                 const rclcpp::Duration& /* period */) {
+  // torque set
+  if(!torque_requests_.empty()){
+    std::lock_guard<std::mutex> lock(torque_mutex_);
+    for (auto& kv : torque_requests_) {
+      uint8_t id = kv.first;
+      bool enable = kv.second;
+
+      auto result = communication_protocol_->set_torque(id, enable);
+      if (!result) {
+        spdlog::error("Torque write failed (id={}): {}", id, result.error());
+        return hardware_interface::return_type::ERROR;
+      }
+    }
+    torque_requests_.clear();
+  }
+
   // Create vectors only for joints that have command interfaces
   std::vector<uint8_t> commanded_joint_ids;
   std::vector<int> commanded_positions;
@@ -324,6 +371,15 @@ CallbackReturn FeetechHardwareInterface::on_deactivate(const rclcpp_lifecycle::S
     return CallbackReturn::ERROR;
   }
   return CallbackReturn::SUCCESS;
+}
+
+void FeetechHardwareInterface::setTorqueCallback(
+  const std::shared_ptr<so101_msgs::srv::SetTorque::Request> req,
+  std::shared_ptr<so101_msgs::srv::SetTorque::Response> res) {
+  for (auto id : req->ids) {
+    torque_requests_.emplace_back(id, req->enable);
+  }
+  res->success = true;
 }
 
 }  // namespace feetech_ros2_driver

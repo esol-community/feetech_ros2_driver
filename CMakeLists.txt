@@ -33,6 +33,7 @@ find_package(rclcpp REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(so101_msgs REQUIRED)
 
 # Set ${PROJECT_NAME}_VERSION
 ament_package_xml()
@@ -42,7 +43,7 @@ target_include_directories(
   ${PROJECT_NAME} PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                          $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(${PROJECT_NAME} rclcpp rclcpp_lifecycle
-                          lifecycle_msgs hardware_interface pluginlib)
+                          lifecycle_msgs hardware_interface pluginlib so101_msgs)
 target_link_libraries(${PROJECT_NAME} communication_protocol
                       serial_port yaml-cpp)
 

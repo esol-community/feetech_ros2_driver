@@ -9,6 +9,8 @@
 #include <rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp>
 #include <rclcpp_lifecycle/state.hpp>
 #include <vector>
+#include <mutex>
+#include "so101_msgs/srv/set_torque.hpp"
 
 #if __has_include(<hardware_interface/hardware_interface/version.h>)
 #include <hardware_interface/hardware_interface/version.h>
@@ -41,12 +43,19 @@ class FeetechHardwareInterface : public hardware_interface::SystemInterface {
   CallbackReturn on_activate(const rclcpp_lifecycle::State& previous_state) override;
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State& previous_state) override;
 
+  rclcpp::Service<so101_msgs::srv::SetTorque>::SharedPtr torque_srv_;
+
+  void setTorqueCallback(
+  const std::shared_ptr<so101_msgs::srv::SetTorque::Request> req,
+  std::shared_ptr<so101_msgs::srv::SetTorque::Response> res);
+
  private:
   std::unique_ptr<feetech_driver::CommunicationProtocol> communication_protocol_;
 
   std::vector<double> hw_positions_;
   std::vector<double> state_hw_positions_;
   std::vector<double> state_hw_velocities_;
+  std::vector<double>  state_hw_efforts_;
   std::vector<uint8_t> previous_hw_positions_;
 
   std::vector<uint8_t> joint_ids_;
@@ -55,5 +64,8 @@ class FeetechHardwareInterface : public hardware_interface::SystemInterface {
   CallbackReturn load_yaml_config_and_warn_(JointIdConfigMap& out_yaml);
   CallbackReturn configure_joints_(const JointIdConfigMap& yaml_by_id);
   CallbackReturn validate_model_series_();
+
+  std::mutex torque_mutex_;
+  std::vector<std::pair<uint8_t, bool>> torque_requests_;
 };
 }  // namespace feetech_ros2_driver
